@@ -73,7 +73,7 @@ def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
         df = df.rename({lower["l1"]:"L1", lower["l2"]:"L2", lower["l3"]:"L3", lower["l4"]:"L4"})
         for c in ["L1","L2","L3","L4"]:
             if c in df.columns:
-                df = df.with_columns(pl.col(c).cast(pl.Utf8).str.strip())
+                df = df.with_columns(pl.col(c).cast(pl.Utf8).str.strip_chars())
         df = df.with_columns(
             pl.concat_str([pl.col(c).fill_null("") for c in CATEGORY_PATH_COLS], separator=" > ")
               .alias("category_path"),
@@ -83,8 +83,8 @@ def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
     elif "category" in lower and "phrase" in lower:
         df = df.rename({lower["category"]:"category", lower["phrase"]:"phrase"})
         df = df.with_columns(
-            pl.col("category").cast(pl.Utf8).str.strip(),
-            pl.col("phrase").cast(pl.Utf8).str.strip(),
+            pl.col("category").cast(pl.Utf8).str.strip_chars(),
+            pl.col("phrase").cast(pl.Utf8).str.strip_chars(),
         ).with_columns(
             pl.col("category").alias("category_path"),
             pl.lit(None).alias("L1"),
