@@ -15,12 +15,13 @@ from flashtext import KeywordProcessor
 st.set_page_config(page_title="Transcript Categorizer", page_icon="🧠", layout="wide")
 st.markdown("""
 <style>
-/* App-wide polish */
 .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
 .big-title {font-size: 1.6rem; font-weight: 700; padding-top: 12px; margin-bottom: .25rem;}
 .subtle {color:#6c757d;}
-.card {border:1px solid #e9ecef; padding:1rem 1.25rem; border-radius:16px; box-shadow:0 1px 6px rgba(0,0,0,0.04); background:linear-gradient(180deg,#ffffff 0%, #fafbff 100%);}
-.kpi {border-radius:16px; padding:1rem 1.25rem; background:linear-gradient(180deg,#f8f9ff 0%, #f1f3ff 100%); border:1px solid #e9e7ff;}
+.card {border:1px solid #e9ecef; padding:1rem 1.25rem; border-radius:16px; 
+       box-shadow:0 1px 6px rgba(0,0,0,0.04); background:linear-gradient(180deg,#ffffff 0%, #fafbff 100%);}
+.kpi {border-radius:16px; padding:1rem 1.25rem; 
+     background:linear-gradient(180deg,#f8f9ff 0%, #f1f3ff 100%); border:1px solid #e9e7ff;}
 hr {border: none; border-top: 1px solid #eee; margin: 1.25rem 0;}
 .stProgress > div > div > div > div { background-image: linear-gradient(to right, #6a11cb, #2575fc); }
 .dataframe tbody tr:hover {background-color:#fafafa;}
@@ -35,23 +36,17 @@ st.write("")
 # =========================
 # ---- CONSTANTS/KNOBS ----
 # =========================
-PHRASE_COL = "L4"                           # L4 contains the matchable phrase
-CATEGORY_PATH_COLS = ["L1", "L2", "L3", "L4"]  # reporting path includes L4
+PHRASE_COL = "L4"
+CATEGORY_PATH_COLS = ["L1", "L2", "L3", "L4"]
 PARQUET_COMPRESSION = "zstd"
-CHUNK_ROWS = 50_000                         # batch size during categorization
-ENABLE_LEMMATIZE = False                    # kept off to avoid NLTK downloads in Streamlit
-ID_COL_CANDIDATES   = ["id","call_id","conversation_id","ticket_id"]
-TEXT_COL_CANDIDATES = ["text","transcript","conversation","content","dialogue","utterances"]
+CHUNK_ROWS = 50_000
+ENABLE_LEMMATIZE = False
 
 # =========================
 # ---- CACHE HELPERS   ----
 # =========================
 @st.cache_data(show_spinner=False)
 def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
-    """
-    Accepts CSV/XLSX with L1..L4 (multi-sheet ok) OR category/phrase.
-    Returns: Polars DF with columns: L1,L2,L3,L4, category_path, phrase
-    """
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
         df = pl.read_csv(io.BytesIO(file_bytes))
@@ -68,18 +63,15 @@ def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
         raise ValueError("Category file must be .csv or .xlsx")
 
     lower = {c.lower(): c for c in df.columns}
-    # L1..L4 path
     if all(k in lower for k in ["l1","l2","l3","l4"]):
         df = df.rename({lower["l1"]:"L1", lower["l2"]:"L2", lower["l3"]:"L3", lower["l4"]:"L4"})
         for c in ["L1","L2","L3","L4"]:
             if c in df.columns:
                 df = df.with_columns(pl.col(c).cast(pl.Utf8).str.strip_chars())
         df = df.with_columns(
-            pl.concat_str([pl.col(c).fill_null("") for c in CATEGORY_PATH_COLS], separator=" > ")
-              .alias("category_path"),
+            pl.concat_str([pl.col(c).fill_null("") for c in CATEGORY_PATH_COLS], separator=" > ").alias("category_path"),
             pl.col(PHRASE_COL).alias("phrase")
         )
-    # category/phrase flat
     elif "category" in lower and "phrase" in lower:
         df = df.rename({lower["category"]:"category", lower["phrase"]:"phrase"})
         df = df.with_columns(
@@ -102,9 +94,7 @@ def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
 def build_keyword_processor(cat_df: pl.DataFrame):
     kp = KeywordProcessor(case_sensitive=False)
     phrase_to_paths: Dict[str, set] = defaultdict(set)
-    # Simple normalization (lowercase); lemmatization skipped for speed & no external downloads
-    def normalize(s: str) -> str:
-        return (s or "").strip().lower()
+    def normalize(s: str) -> str: return (s or "").strip().lower()
     for r in cat_df.iter_rows(named=True):
         phrase = normalize(r["phrase"])
         phrase_to_paths[phrase].add(r["category_path"])
@@ -112,45 +102,19 @@ def build_keyword_processor(cat_df: pl.DataFrame):
         kp.add_keyword(phrase, tuple(sorted(paths)))
     return kp
 
-def _detect_cols(df: pl.DataFrame, manual_id: str|None=None, manual_text: str|None=None) -> Tuple[str,str]:
-    if manual_id and manual_id in df.columns:
-        id_col = manual_id
-    else:
-        lower = {c.lower(): c for c in df.columns}
-        id_col = next((lower[c] for c in ID_COL_CANDIDATES if c in lower), None)
-
-    if manual_text and manual_text in df.columns:
-        text_col = manual_text
-    else:
-        lower = {c.lower(): c for c in df.columns}
-        text_col = next((lower[c] for c in TEXT_COL_CANDIDATES if c in lower), None)
-
-    if not id_col or not text_col:
-        raise ValueError(f"Could not detect ID/TEXT columns. Found: {df.columns}")
-    return id_col, text_col
-
 @st.cache_data(show_spinner=False)
 def convert_csv_to_parquet_streaming(csv_bytes: bytes, filename: str, compression: str = PARQUET_COMPRESSION) -> bytes:
-    """
-    Uses polars scan_csv(...).sink_parquet(...) to stream-convert without loading whole CSV.
-    Returns Parquet file bytes.
-    """
     with tempfile.TemporaryDirectory() as tmpd:
         csv_path = os.path.join(tmpd, Path(filename).name)
         with open(csv_path, "wb") as f:
             f.write(csv_bytes)
         parquet_path = os.path.join(tmpd, Path(filename).with_suffix(".parquet").name)
-        # streaming conversion (fast for large text)
         pl.scan_csv(csv_path).sink_parquet(parquet_path, compression=compression)
         with open(parquet_path, "rb") as f:
             return f.read()
 
 @st.cache_data(show_spinner=False)
 def read_transcripts_any(file_bytes: bytes, filename: str) -> pl.DataFrame:
-    """
-    Accepts CSV or Parquet. If CSV -> stream convert to Parquet first.
-    Returns Polars DataFrame (full materialized, but downstream we can chunk if needed).
-    """
     suffix = Path(filename).suffix.lower()
     if suffix == ".parquet":
         return pl.read_parquet(io.BytesIO(file_bytes))
@@ -163,11 +127,9 @@ def read_transcripts_any(file_bytes: bytes, filename: str) -> pl.DataFrame:
 def _summarize_hits(hits) -> Tuple[List[str], Dict[str,int], str|None]:
     counter = Counter()
     for h in hits:
-        # FlashText span_info returns (value, start, end) OR (value, matched, start, end)
         val = h[0]
         paths = val if isinstance(val, tuple) else (str(val),)
-        for p in paths:
-            counter[p] += 1
+        for p in paths: counter[p] += 1
     all_paths = list(counter.keys())
     top_path = max(counter.items(), key=lambda kv: kv[1])[0] if counter else None
     return all_paths, dict(counter), top_path
@@ -176,9 +138,6 @@ def _normalize_text_basic(s: str) -> str:
     return (s or "").strip().lower()
 
 def categorize_df(transcripts_df: pl.DataFrame, kp: KeywordProcessor, id_col: str, text_col: str) -> pl.DataFrame:
-    """
-    Chunked categorization to keep memory OK with very long rows.
-    """
     n = transcripts_df.height
     batches = math.ceil(n / CHUNK_ROWS)
     out_frames = []
@@ -208,23 +167,16 @@ def categorize_df(transcripts_df: pl.DataFrame, kp: KeywordProcessor, id_col: st
                                                                        "category_path_counts_json": pl.Utf8})
 
 def make_downloads(joined: pl.DataFrame, summary: pl.DataFrame) -> Tuple[bytes, bytes, bytes]:
-    """
-    Returns (parquet_bytes, excel_bytes, csv_zip_bytes(optional)) -> we'll return parquet & excel & csv (two files merged into one CSV? better: two CSVs in zip).
-    To keep it simple: Parquet + Excel. Also CSV (raw_with_categories) only.
-    """
-    # Parquet
     pq_buf = io.BytesIO()
     joined.write_parquet(pq_buf, compression=PARQUET_COMPRESSION)
     pq_bytes = pq_buf.getvalue()
 
-    # Excel with two sheets
     xls_buf = io.BytesIO()
     with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as xl:
         joined.to_pandas(use_pyarrow_extension_array=True).to_excel(xl, index=False, sheet_name="raw_with_categories")
         summary.to_pandas(use_pyarrow_extension_array=True).to_excel(xl, index=False, sheet_name="summary_by_category")
     xls_bytes = xls_buf.getvalue()
 
-    # CSV (raw_with_categories) for quick look
     csv_buf = io.StringIO()
     joined.write_csv(csv_buf)
     csv_bytes = csv_buf.getvalue().encode("utf-8")
@@ -242,12 +194,6 @@ with st.sidebar:
     st.markdown("**Upload Files**")
     cat_file = st.file_uploader("Categories (.csv or .xlsx with L1..L4 or category/phrase)", type=["csv","xlsx"])
     trn_file = st.file_uploader("Transcripts (.csv or .parquet)", type=["csv","parquet"])
-
-    st.write("")
-    st.markdown("**Column Overrides (optional)**")
-    override_id = st.text_input("ID column (leave blank to auto-detect)")
-    override_text = st.text_input("Text column (leave blank to auto-detect)")
-
     st.write("")
     go = st.button("🚀 Process", type="primary", use_container_width=True)
 
@@ -255,12 +201,9 @@ with st.sidebar:
 # --------- MAIN ----------
 # =========================
 col1, col2, col3 = st.columns([1,1,1], gap="large")
-with col1:
-    st.markdown('<div class="kpi"><b>Step 1</b><br/>Upload your files</div>', unsafe_allow_html=True)
-with col2:
-    st.markdown('<div class="kpi"><b>Step 2</b><br/>Auto-convert CSV → Parquet</div>', unsafe_allow_html=True)
-with col3:
-    st.markdown('<div class="kpi"><b>Step 3</b><br/>Categorize & Download</div>', unsafe_allow_html=True)
+with col1: st.markdown('<div class="kpi"><b>Step 1</b><br/>Upload your files</div>', unsafe_allow_html=True)
+with col2: st.markdown('<div class="kpi"><b>Step 2</b><br/>Auto-convert CSV → Parquet</div>', unsafe_allow_html=True)
+with col3: st.markdown('<div class="kpi"><b>Step 3</b><br/>Categorize & Download</div>', unsafe_allow_html=True)
 
 st.write("")
 st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -269,7 +212,6 @@ if go:
     if not cat_file or not trn_file:
         st.error("Please upload both **Categories** and **Transcripts** files.")
     else:
-        # Load categories
         try:
             with st.spinner("Reading categories…"):
                 cat_df = read_categories(cat_file.read(), cat_file.name)
@@ -278,7 +220,6 @@ if go:
             st.error(f"Failed to read categories: {e}")
             st.stop()
 
-        # Build keyword processor
         try:
             with st.spinner("Building keyword index (FlashText)…"):
                 kp = build_keyword_processor(cat_df)
@@ -287,7 +228,6 @@ if go:
             st.error(f"Failed to build keyword index: {e}")
             st.stop()
 
-        # Load transcripts (CSV -> Parquet streaming if needed)
         try:
             st.info("Loading transcripts (CSV will be converted to Parquet via Polars streaming)…")
             start = time.time()
@@ -299,16 +239,14 @@ if go:
             st.error(f"Failed to read transcripts: {e}")
             st.stop()
 
-        # Choose ID/TEXT columns (auto-detect + allow override)
+        # 👇 User selects ID and Text columns here
         cols = trn_df.columns
         id_col = st.selectbox("Select ID column", options=cols)
         text_col = st.selectbox("Select Text column", options=cols)
 
-st.write("")
-st.markdown(f"**Selected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
+        st.write("")
+        st.markdown(f"**Selected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
 
-
-        # Categorize
         try:
             cat_only = categorize_df(trn_df.select([id_col, text_col]), kp, id_col, text_col)
             st.success(f"Categorized {cat_only.height:,} rows")
@@ -316,22 +254,18 @@ st.markdown(f"**Selected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
             st.error(f"Categorization failed: {e}")
             st.stop()
 
-        # Join back + summary
         joined = trn_df.join(cat_only, on=id_col, how="left")
-        summary = (
-            joined.with_columns(pl.col("all_categories_path").fill_null([]))
-                  .explode("all_categories_path")
-                  .group_by("all_categories_path")
-                  .agg(pl.len().alias("n_conversations"))
-                  .sort("n_conversations", descending=True)
-                  .rename({"all_categories_path":"category_path"})
-        )
+        summary = (joined.with_columns(pl.col("all_categories_path").fill_null([]))
+                          .explode("all_categories_path")
+                          .group_by("all_categories_path")
+                          .agg(pl.len().alias("n_conversations"))
+                          .sort("n_conversations", descending=True)
+                          .rename({"all_categories_path":"category_path"}))
 
         st.write("")
         st.markdown("### 📊 Summary by Category Path (Top 25)")
         st.dataframe(summary.head(25).to_pandas(), use_container_width=True, height=420)
 
-        # Downloads
         pq_bytes, xls_bytes, csv_bytes = make_downloads(joined, summary)
         c1, c2, c3 = st.columns(3)
         with c1:
