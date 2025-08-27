@@ -18,6 +18,7 @@ st.markdown("""
 /* App-wide polish */
 .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
 .big-title {font-size: 1.6rem; font-weight: 700; line-height: 1.3; margin-bottom: .25rem;}
+
 .subtle {color:#6c757d;}
 .card {border:1px solid #e9ecef; padding:1rem 1.25rem; border-radius:16px; box-shadow:0 1px 6px rgba(0,0,0,0.04); background:linear-gradient(180deg,#ffffff 0%, #fafbff 100%);}
 .kpi {border-radius:16px; padding:1rem 1.25rem; background:linear-gradient(180deg,#f8f9ff 0%, #f1f3ff 100%); border:1px solid #e9e7ff;}
