@@ -206,7 +206,10 @@ if go:
         st.error(f"Categorization failed: {e}")
         st.stop()
 
-    # ✅ FIXED JOIN
+    # ✅ FIX: cast join keys to Utf8 before joining
+    trn_df = trn_df.with_columns(pl.col(id_col).cast(pl.Utf8))
+    cat_only = cat_only.with_columns(pl.col(id_col).cast(pl.Utf8))
+
     joined = trn_df.join(cat_only, on=id_col, how="left")
 
     summary = (joined.with_columns(pl.col("all_categories_path").fill_null([]))
