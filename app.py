@@ -63,18 +63,18 @@ def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
 @st.cache_resource(show_spinner=False)
 def build_keyword_processor(cat_df: pl.DataFrame, phrase_col: str, category_path_cols: List[str]):
     kp = KeywordProcessor(case_sensitive=False)
-    phrase_to_paths: Dict[str, set] = defaultdict(set)
+    phrase_to_paths: Dict[str, list] = defaultdict(list)
 
     def normalize(s: str) -> str: return (s or "").strip().lower()
     for r in cat_df.iter_rows(named=True):
         if r[phrase_col] is None:
             continue
         phrase = normalize(r[phrase_col])
-        path_parts = [str(r[c]) for c in category_path_cols if c in r and r[c] is not None]
-        category_path = " > ".join(path_parts)
-        phrase_to_paths[phrase].add(category_path)
+        # Store structured levels
+        path_parts = {c: r[c] if c in r else None for c in ["L1","L2","L3","L4"]}
+        phrase_to_paths[phrase].append(path_parts)
     for phrase, paths in phrase_to_paths.items():
-        kp.add_keyword(phrase, tuple(sorted(paths)))
+        kp.add_keyword(phrase, paths)
     return kp
 
 @st.cache_data(show_spinner=False)
@@ -99,17 +99,6 @@ def read_transcripts_any(file_bytes: bytes, filename: str) -> pl.DataFrame:
     else:
         raise ValueError("Transcripts must be .csv or .parquet")
 
-def _summarize_hits(hits) -> Tuple[List[str], Dict[str,int], str|None]:
-    counter = Counter()
-    for h in hits:
-        val = h[0]
-        paths = val if isinstance(val, tuple) else (str(val),)
-        for p in paths:
-            counter[p] += 1
-    all_paths = list(counter.keys())
-    top_path = max(counter.items(), key=lambda kv: kv[1])[0] if counter else None
-    return all_paths, dict(counter), top_path
-
 def _normalize_text_basic(s: str) -> str:
     return (s or "").strip().lower()
 
@@ -127,31 +116,49 @@ def categorize_df(transcripts_df: pl.DataFrame, kp: KeywordProcessor, id_col: st
             rid = str(r[id_col]) if id_col else str(start + len(rows))
             t   = _normalize_text_basic(r[text_col] if r[text_col] is not None else "")
             hits = kp.extract_keywords(t, span_info=True)
-            all_paths, cnts, top_path = _summarize_hits(hits)
-            rows.append({
-                id_col: rid,
-                "all_categories_path": all_paths,
-                "top_category_path": top_path,
-                "category_path_counts_json": orjson.dumps(cnts).decode()
-            })
+            if not hits:
+                rows.append({
+                    id_col: rid,
+                    "matched_phrase": None,
+                    "L1": None, "L2": None, "L3": None, "L4": None
+                })
+            else:
+                for h in hits:
+                    phrase = h[0]
+                    for path in h[1]:  # structured dict from kp
+                        rows.append({
+                            id_col: rid,
+                            "matched_phrase": phrase,
+                            "L1": path.get("L1"),
+                            "L2": path.get("L2"),
+                            "L3": path.get("L3"),
+                            "L4": path.get("L4"),
+                        })
         out_frames.append(pl.DataFrame(rows))
         prog.progress((b+1)/batches, text=f"Categorizing transcripts… {b+1}/{batches} batches")
     prog.empty()
     return pl.concat(out_frames)
 
 def make_downloads(joined: pl.DataFrame, summary: pl.DataFrame) -> Tuple[bytes, bytes, bytes]:
+    # Parquet
     pq_buf = io.BytesIO()
     joined.write_parquet(pq_buf, compression=PARQUET_COMPRESSION)
     pq_bytes = pq_buf.getvalue()
 
+    # Excel
     xls_buf = io.BytesIO()
     with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as xl:
-        joined.to_pandas(use_pyarrow_extension_array=True).to_excel(xl, index=False, sheet_name="raw_with_categories")
-        summary.to_pandas(use_pyarrow_extension_array=True).to_excel(xl, index=False, sheet_name="summary_by_category")
+        joined.to_pandas(use_pyarrow_extension_array=True).to_excel(
+            xl, index=False, sheet_name="raw_with_categories"
+        )
+        summary.to_pandas(use_pyarrow_extension_array=True).to_excel(
+            xl, index=False, sheet_name="summary_by_category"
+        )
     xls_bytes = xls_buf.getvalue()
 
+    # ✅ CSV via pandas
     csv_buf = io.StringIO()
-    joined.write_csv(csv_buf)
+    joined.to_pandas(use_pyarrow_extension_array=True).to_csv(csv_buf, index=False)
     csv_bytes = csv_buf.getvalue().encode("utf-8")
 
     return pq_bytes, xls_bytes, csv_bytes
@@ -164,15 +171,13 @@ with st.sidebar:
     cat_file = st.file_uploader("Categories (.csv or .xlsx)", type=["csv","xlsx"])
     trn_file = st.file_uploader("Transcripts (.csv or .parquet)", type=["csv","parquet"])
 
-    phrase_col, category_path_cols, id_col, text_col = None, [], None, None
+    phrase_col, id_col, text_col = None, None, None
     cat_df, trn_df = None, None
 
     if cat_file:
         cat_df = read_categories(cat_file.read(), cat_file.name)
         st.success(f"Categories loaded with {cat_df.height:,} rows")
         phrase_col = st.selectbox("Select Phrase column", options=cat_df.columns)
-        available_levels = [c for c in ["L1","L2","L3","L4"] if c in cat_df.columns]
-        category_path_cols = st.multiselect("Select Category Levels to include", options=available_levels, default=available_levels)
 
     if trn_file:
         trn_df = read_transcripts_any(trn_file.read(), trn_file.name)
@@ -190,7 +195,7 @@ with st.sidebar:
 # =========================
 if go:
     try:
-        kp = build_keyword_processor(cat_df, phrase_col, category_path_cols)
+        kp = build_keyword_processor(cat_df, phrase_col, ["L1","L2","L3","L4"])
     except Exception as e:
         st.error(f"Failed to build keyword index: {e}")
         st.stop()
@@ -206,20 +211,20 @@ if go:
         st.error(f"Categorization failed: {e}")
         st.stop()
 
-    # ✅ FIX: cast join keys to Utf8 before joining
+    # ✅ Cast join keys to Utf8
     trn_df = trn_df.with_columns(pl.col(id_col).cast(pl.Utf8))
     cat_only = cat_only.with_columns(pl.col(id_col).cast(pl.Utf8))
 
     joined = trn_df.join(cat_only, on=id_col, how="left")
 
-    summary = (joined.with_columns(pl.col("all_categories_path").fill_null([]))
-                      .explode("all_categories_path")
-                      .group_by("all_categories_path")
-                      .agg(pl.len().alias("n_conversations"))
-                      .sort("n_conversations", descending=True)
-                      .rename({"all_categories_path":"category_path"}))
+    # Summary grouped by L1–L4
+    summary = (
+        joined.group_by(["L1","L2","L3","L4"])
+              .agg(pl.len().alias("n_conversations"))
+              .sort("n_conversations", descending=True)
+    )
 
-    st.write("### 📊 Summary by Category Path (Top 25)")
+    st.write("### 📊 Summary by Category (Top 25)")
     st.dataframe(summary.head(25).to_pandas(), use_container_width=True, height=420)
 
     pq_bytes, xls_bytes, csv_bytes = make_downloads(joined, summary)
