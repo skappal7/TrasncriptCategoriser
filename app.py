@@ -300,17 +300,13 @@ if go:
             st.stop()
 
         # Choose ID/TEXT columns (auto-detect + allow override)
-        try:
-            sample = trn_df.head(1)
-            id_col, text_col = _detect_cols(sample,
-                                            manual_id=override_id.strip() or None,
-                                            manual_text=override_text.strip() or None)
-        except Exception as e:
-            st.error(f"Column detection error: {e}")
-            st.stop()
+        cols = trn_df.columns
+        id_col = st.selectbox("Select ID column", options=cols)
+        text_col = st.selectbox("Select Text column", options=cols)
 
-        st.write("")
-        st.markdown(f"**Detected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
+st.write("")
+st.markdown(f"**Selected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
+
 
         # Categorize
         try:
