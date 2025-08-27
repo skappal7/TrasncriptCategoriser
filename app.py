@@ -30,7 +30,7 @@ button[kind="primary"] {border-radius: 12px;}
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="big-title">🧠 Transcript Categorizer</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtle">Upload categories & transcripts, select columns, choose category levels, and download categorized results.</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtle">Upload categories & transcripts → Select columns → Process & Download results</div>', unsafe_allow_html=True)
 st.write("")
 
 # =========================
@@ -38,10 +38,9 @@ st.write("")
 # =========================
 PARQUET_COMPRESSION = "zstd"
 CHUNK_ROWS = 50_000
-ENABLE_LEMMATIZE = False
 
 # =========================
-# ---- CACHE HELPERS   ----
+# ---- HELPERS / CACHE ----
 # =========================
 @st.cache_data(show_spinner=False)
 def read_categories(file_bytes: bytes, filename: str) -> pl.DataFrame:
@@ -68,7 +67,8 @@ def build_keyword_processor(cat_df: pl.DataFrame, phrase_col: str, category_path
 
     def normalize(s: str) -> str: return (s or "").strip().lower()
     for r in cat_df.iter_rows(named=True):
-        if r[phrase_col] is None: continue
+        if r[phrase_col] is None:
+            continue
         phrase = normalize(r[phrase_col])
         path_parts = [str(r[c]) for c in category_path_cols if c in r and r[c] is not None]
         category_path = " > ".join(path_parts)
@@ -104,7 +104,8 @@ def _summarize_hits(hits) -> Tuple[List[str], Dict[str,int], str|None]:
     for h in hits:
         val = h[0]
         paths = val if isinstance(val, tuple) else (str(val),)
-        for p in paths: counter[p] += 1
+        for p in paths:
+            counter[p] += 1
     all_paths = list(counter.keys())
     top_path = max(counter.items(), key=lambda kv: kv[1])[0] if counter else None
     return all_paths, dict(counter), top_path
@@ -128,7 +129,7 @@ def categorize_df(transcripts_df: pl.DataFrame, kp: KeywordProcessor, id_col: st
             hits = kp.extract_keywords(t, span_info=True)
             all_paths, cnts, top_path = _summarize_hits(hits)
             rows.append({
-                "row_id": rid,
+                id_col: rid,
                 "all_categories_path": all_paths,
                 "top_category_path": top_path,
                 "category_path_counts_json": orjson.dumps(cnts).decode()
@@ -160,96 +161,77 @@ def make_downloads(joined: pl.DataFrame, summary: pl.DataFrame) -> Tuple[bytes, 
 # =========================
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
-    st.caption("Select category levels & transcript columns explicitly.")
-    st.write("")
-    st.markdown("**Upload Files**")
     cat_file = st.file_uploader("Categories (.csv or .xlsx)", type=["csv","xlsx"])
     trn_file = st.file_uploader("Transcripts (.csv or .parquet)", type=["csv","parquet"])
-    st.write("")
-    go = st.button("🚀 Process", type="primary", use_container_width=True)
+
+    phrase_col, category_path_cols, id_col, text_col = None, [], None, None
+    cat_df, trn_df = None, None
+
+    if cat_file:
+        cat_df = read_categories(cat_file.read(), cat_file.name)
+        st.success(f"Categories loaded with {cat_df.height:,} rows")
+        phrase_col = st.selectbox("Select Phrase column", options=cat_df.columns)
+        available_levels = [c for c in ["L1","L2","L3","L4"] if c in cat_df.columns]
+        category_path_cols = st.multiselect("Select Category Levels to include", options=available_levels, default=available_levels)
+
+    if trn_file:
+        trn_df = read_transcripts_any(trn_file.read(), trn_file.name)
+        st.success(f"Transcripts loaded with {trn_df.height:,} rows")
+        cols = trn_df.columns
+        id_col = st.selectbox("Select ID column (or <none>)", options=["<none>"] + list(cols))
+        text_col = st.selectbox("Select Transcript Text column", options=cols)
+
+    go = False
+    if cat_file and trn_file and phrase_col and text_col:
+        go = st.button("🚀 Process", type="primary", use_container_width=True)
 
 # =========================
 # --------- MAIN ----------
 # =========================
 if go:
-    if not cat_file or not trn_file:
-        st.error("Please upload both **Categories** and **Transcripts** files.")
-    else:
-        try:
-            with st.spinner("Reading categories…"):
-                cat_df = read_categories(cat_file.read(), cat_file.name)
-            st.success(f"Loaded categories file with {cat_df.height:,} rows")
-        except Exception as e:
-            st.error(f"Failed to read categories: {e}")
-            st.stop()
+    try:
+        kp = build_keyword_processor(cat_df, phrase_col, category_path_cols)
+    except Exception as e:
+        st.error(f"Failed to build keyword index: {e}")
+        st.stop()
 
-        # Let user select category levels
-        cat_cols = [c for c in ["L1","L2","L3","L4"] if c in cat_df.columns]
-        phrase_col = st.selectbox("Select Phrase column (usually L4 or 'phrase')", options=cat_df.columns)
-        category_path_cols = st.multiselect("Select Category Levels to include in output path", options=cat_cols, default=cat_cols)
+    if id_col == "<none>":
+        trn_df = trn_df.with_row_index(name="row_id")
+        id_col = "row_id"
 
-        try:
-            with st.spinner("Building keyword index (FlashText)…"):
-                kp = build_keyword_processor(cat_df, phrase_col, category_path_cols)
-            st.success("Keyword index ready")
-        except Exception as e:
-            st.error(f"Failed to build keyword index: {e}")
-            st.stop()
+    try:
+        cat_only = categorize_df(trn_df.select([id_col, text_col]), kp, id_col, text_col)
+        st.success(f"Categorized {cat_only.height:,} rows")
+    except Exception as e:
+        st.error(f"Categorization failed: {e}")
+        st.stop()
 
-        try:
-            st.info("Loading transcripts (CSV will be converted to Parquet via Polars streaming)…")
-            start = time.time()
-            trn_bytes = trn_file.read()
-            trn_df = read_transcripts_any(trn_bytes, trn_file.name)
-            elapsed = time.time() - start
-            st.success(f"Transcripts loaded in {elapsed:0.1f}s · Rows: {trn_df.height:,}")
-        except Exception as e:
-            st.error(f"Failed to read transcripts: {e}")
-            st.stop()
+    # ✅ FIXED JOIN
+    joined = trn_df.join(cat_only, on=id_col, how="left")
 
-        # User selects transcript columns
-        trn_cols = trn_df.columns
-        id_col = st.selectbox("Select ID column (or choose none)", options=["<none>"] + list(trn_cols))
-        text_col = st.selectbox("Select Transcript Text column", options=trn_cols)
+    summary = (joined.with_columns(pl.col("all_categories_path").fill_null([]))
+                      .explode("all_categories_path")
+                      .group_by("all_categories_path")
+                      .agg(pl.len().alias("n_conversations"))
+                      .sort("n_conversations", descending=True)
+                      .rename({"all_categories_path":"category_path"}))
 
-        if id_col == "<none>":
-            trn_df = trn_df.with_row_index(name="row_id")
-            id_col = "row_id"
+    st.write("### 📊 Summary by Category Path (Top 25)")
+    st.dataframe(summary.head(25).to_pandas(), use_container_width=True, height=420)
 
-        st.markdown(f"**Using** → ID: `{id_col}` · TEXT: `{text_col}`")
+    pq_bytes, xls_bytes, csv_bytes = make_downloads(joined, summary)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.download_button("⬇️ Download Parquet", data=pq_bytes, file_name="categorized_output.parquet",
+                           mime="application/octet-stream", use_container_width=True)
+    with c2:
+        st.download_button("⬇️ Download Excel (2 sheets)", data=xls_bytes, file_name="categorized_output.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           use_container_width=True)
+    with c3:
+        st.download_button("⬇️ Download CSV", data=csv_bytes, file_name="categorized_output.csv",
+                           mime="text/csv", use_container_width=True)
 
-        try:
-            cat_only = categorize_df(trn_df.select([id_col, text_col]), kp, id_col, text_col)
-            st.success(f"Categorized {cat_only.height:,} rows")
-        except Exception as e:
-            st.error(f"Categorization failed: {e}")
-            st.stop()
-
-        joined = trn_df.join(cat_only, left_on=id_col, right_on="row_id", how="left")
-        summary = (joined.with_columns(pl.col("all_categories_path").fill_null([]))
-                          .explode("all_categories_path")
-                          .group_by("all_categories_path")
-                          .agg(pl.len().alias("n_conversations"))
-                          .sort("n_conversations", descending=True)
-                          .rename({"all_categories_path":"category_path"}))
-
-        st.write("")
-        st.markdown("### 📊 Summary by Category Path (Top 25)")
-        st.dataframe(summary.head(25).to_pandas(), use_container_width=True, height=420)
-
-        pq_bytes, xls_bytes, csv_bytes = make_downloads(joined, summary)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.download_button("⬇️ Download Parquet", data=pq_bytes, file_name="categorized_output.parquet",
-                               mime="application/octet-stream", use_container_width=True)
-        with c2:
-            st.download_button("⬇️ Download Excel (2 sheets)", data=xls_bytes, file_name="categorized_output.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               use_container_width=True)
-        with c3:
-            st.download_button("⬇️ Download CSV", data=csv_bytes, file_name="categorized_output.csv",
-                               mime="text/csv", use_container_width=True)
-
-        st.success("Done! Refresh the browser to clear cache and start over.")
+    st.success("Done! Refresh the browser to clear cache and start over.")
 else:
-    st.info("Upload files in the sidebar and click **Process** to begin.")
+    st.info("Upload files in the sidebar, select columns, then click **Process**.")
