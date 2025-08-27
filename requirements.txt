@@ -1,0 +1,20 @@
+# Core app
+streamlit>=1.36.0
+
+# Fast dataframe engine + parquet
+polars>=1.2.0
+pyarrow>=16.1.0
+
+# Excel support
+pandas>=2.2.2
+openpyxl>=3.1.2
+XlsxWriter>=3.2.0
+
+# Keyword extraction
+flashtext>=2.7
+
+# JSON + utilities
+orjson>=3.10.3
+
+# Progress, CLI-style
+tqdm>=4.66.4
