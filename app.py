@@ -241,11 +241,22 @@ if go:
 
         # 👇 User selects ID and Text columns here
         cols = trn_df.columns
-        id_col = st.selectbox("Select ID column", options=cols)
-        text_col = st.selectbox("Select Text column", options=cols)
 
-        st.write("")
-        st.markdown(f"**Selected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
+       if len(cols) > 1:
+           id_col = st.selectbox("Select ID column (or choose <auto-generate>)", 
+                          options=["<auto-generate>"] + list(cols))
+       text_col = st.selectbox("Select Text column", options=cols)
+       else:
+           id_col = "<auto-generate>"
+           text_col = cols[0]
+
+       st.write("")
+       st.markdown(f"**Selected columns** → ID: `{id_col}` · TEXT: `{text_col}`")
+
+# If ID is auto-generated, add a row index
+       if id_col == "<auto-generate>":
+           trn_df = trn_df.with_row_index(name="row_id")
+           id_col = "row_id"
 
         try:
             cat_only = categorize_df(trn_df.select([id_col, text_col]), kp, id_col, text_col)
