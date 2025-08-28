@@ -374,27 +374,42 @@ def make_downloads(joined: pl.DataFrame, summary: pl.DataFrame) -> Tuple[bytes, 
         pq_buf.close()
 
         # Excel (limit size for stability)
-        if joined.height > 100_000:
-            st.warning("Excel output limited to first 100,000 rows due to size constraints. Use Parquet for complete data.")
-            joined_excel = joined.head(100_000)
+        excel_limit = 100_000
+        if joined.height > excel_limit:
+            st.info(f"Excel output limited to first {excel_limit:,} rows due to Excel constraints. Use Parquet for complete data.")
+            joined_excel = joined.head(excel_limit)
         else:
             joined_excel = joined
         
         xls_buf = io.BytesIO()
-        with pd.ExcelWriter(xls_buf, engine="xlsxwriter", options={'strings_to_numbers': True}) as xl:
-            joined_excel.to_pandas(use_pyarrow_extension_array=True).to_excel(
-                xl, index=False, sheet_name="raw_with_categories"
-            )
-            summary.to_pandas(use_pyarrow_extension_array=True).to_excel(
-                xl, index=False, sheet_name="summary_by_category"
-            )
+        try:
+            with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as xl:
+                joined_excel.to_pandas(use_pyarrow_extension_array=True).to_excel(
+                    xl, index=False, sheet_name="raw_with_categories"
+                )
+                summary.to_pandas(use_pyarrow_extension_array=True).to_excel(
+                    xl, index=False, sheet_name="summary_by_category"
+                )
+        except Exception as e:
+            # Fallback to openpyxl if xlsxwriter fails
+            logger.warning(f"xlsxwriter failed, trying openpyxl: {e}")
+            xls_buf = io.BytesIO()
+            with pd.ExcelWriter(xls_buf, engine="openpyxl") as xl:
+                joined_excel.to_pandas(use_pyarrow_extension_array=True).to_excel(
+                    xl, index=False, sheet_name="raw_with_categories"
+                )
+                summary.to_pandas(use_pyarrow_extension_array=True).to_excel(
+                    xl, index=False, sheet_name="summary_by_category"
+                )
+        
         xls_bytes = xls_buf.getvalue()
         xls_buf.close()
 
-        # CSV via pandas (limit size for stability)
-        if joined.height > 200_000:
-            st.warning("CSV output limited to first 200,000 rows due to size constraints. Use Parquet for complete data.")
-            joined_csv = joined.head(200_000)
+        # CSV (limit size for stability)
+        csv_limit = 200_000
+        if joined.height > csv_limit:
+            st.info(f"CSV output limited to first {csv_limit:,} rows due to size constraints. Use Parquet for complete data.")
+            joined_csv = joined.head(csv_limit)
         else:
             joined_csv = joined
             
