@@ -101,7 +101,8 @@ PARQUET_COMPRESSION = "zstd"
 CHUNK_ROWS = 25_000
 MAX_FILE_SIZE_MB = 1000
 MAX_ROWS = 2_000_000
-CLEAN_REGEX = re.compile(r"\[.*?\]|\d{4}-\d{2}-\d{2}.*?\+\d{4}|(?i)(Consumer:|AGENT:|CUSTOMER:|System:)|[\|\n]")
+# We removed (?i) from the string and added flags=re.IGNORECASE
+CLEAN_REGEX = re.compile(r"\[.*?\]|\d{4}-\d{2}-\d{2}.*?\+\d{4}|(Consumer:|AGENT:|CUSTOMER:|System:)|[\|\n]", flags=re.IGNORECASE)
 
 # =========================
 # ---- CORE LOGIC ----
